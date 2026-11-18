@@ -1,0 +1,6 @@
+*.exe
+*.zip
+*.pdb
+bin/
+obj/
+settings.txt
