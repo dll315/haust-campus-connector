@@ -12,8 +12,8 @@
 
 ## 托盘与后台监控
 
-- 勾选「启动时最小化到托盘」。已开启监控时，下次打开程序会直接进入托盘。若同时启用了开机自启，登录 Windows 时也会直接进入托盘。
-- 点击窗口右上角的「最小化」可立即转到托盘。双击通知区域图标恢复窗口，右键菜单可暂停、恢复监控或退出程序。
+- 勾选「登录 Windows 时自动启动」和「开机自启时保持最小化」，下次登录 Windows 后会最小化运行。手动双击程序会打开窗口，程序已运行时会恢复现有窗口。
+- 点击窗口右上角的「最小化」后，可从任务栏或通知区域恢复窗口。若图标在右下角「^」菜单里，可把它拖到通知区域常驻显示。托盘图标的右键菜单可暂停、恢复监控或退出程序。
 - 联网稳定时每 60 秒检查一次。网络地址变化或电脑从睡眠唤醒时，会提前检查。需要恢复连接时约每 15 秒检查一次。
 
 ## 校园网认证
@@ -34,5 +34,7 @@ if ($test.ExitCode) { throw 'Self-test failed' }
 ```
 
 移动程序时，请将 `CampusConnector.exe` 和 `CampusConnector.exe.config` 放在同一目录。配置文件启用高 DPI 支持。
+
+如果程序因异常退出，最近一次的错误类型和堆栈会记录在 `%LOCALAPPDATA%\CampusConnector\last-error.txt`，便于定位。
 
 参考 [河南科技大学入网说明](https://metic.haust.edu.cn/info/1002/4280.htm) 和 [haust-auto-login](https://github.com/heragehome/haust-auto-login) 的认证流程。

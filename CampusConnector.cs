@@ -12,7 +12,7 @@ using System.Windows.Forms;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 [assembly: System.Reflection.AssemblyTitle("河科大校园网助手")]
-[assembly: System.Reflection.AssemblyFileVersion("3.2.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.3.0.0")]
 
 sealed class CampusConnector : Form
 {
@@ -32,7 +32,7 @@ sealed class CampusConnector : Form
     readonly ToolStripMenuItem trayToggle = new ToolStripMenuItem();
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     readonly AppSettings config;
-    readonly bool startInTray;
+    readonly bool startMinimizedOnLogin;
     bool monitoring, busy, portalOpened, updating, editing, savedAccount;
     bool steadyConnection, checkSoon, networkSubscribed;
     int networkNotificationQueued;
@@ -50,14 +50,28 @@ sealed class CampusConnector : Form
             try { Checks.Run(); return 0; }
             catch (Exception error) { Console.Error.WriteLine(error); return 1; }
         }
+        try { return Run(args.Contains("--startup")); }
+        catch (Exception error)
+        {
+            var saved = SaveCrashReport(error);
+            MessageBox.Show("校园网助手遇到错误，已停止运行。可重新打开程序。" +
+                (saved == null ? "" : "\r\n诊断文件位于 " + saved),
+                "河科大校园网助手", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    static int Run(bool background)
+    {
         bool first;
         using (var activation = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\CampusConnector.Show"))
         using (var mutex = new Mutex(true, @"Local\CampusConnector", out first))
         {
-            if (!first) { if (!args.Contains("--startup")) activation.Set(); return 0; }
+            if (!first) { if (!background) activation.Set(); return 0; }
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (var form = new CampusConnector(args.Contains("--startup")))
+            using (var form = new CampusConnector(background))
             {
                 var handle = form.Handle;
                 form.BeginInvoke(new Action(form.Start));
@@ -77,6 +91,22 @@ sealed class CampusConnector : Form
         return 0;
     }
 
+    static string SaveCrashReport(Exception error)
+    {
+        try
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CampusConnector");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "last-error.txt");
+            File.WriteAllText(path, DateTime.UtcNow.ToString("O") + Environment.NewLine +
+                Application.ProductVersion + Environment.NewLine + error.GetType().FullName + Environment.NewLine + error.StackTrace);
+            return path;
+        }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+        catch (SecurityException) { return null; }
+    }
+
     CampusConnector(bool background)
     {
         string warning = null;
@@ -84,7 +114,7 @@ sealed class CampusConnector : Form
         catch (IOException) { config = new AppSettings(); warning = "无法读取上次设置，请重新选择校园 Wi-Fi。"; }
         catch (UnauthorizedAccessException) { config = new AppSettings(); warning = "无法读取上次设置，请检查 Windows 权限。"; }
         catch (SecurityException) { config = new AppSettings(); warning = "无法读取上次设置，请检查 Windows 权限。"; }
-        startInTray = config.StartMinimized && (background || config.Monitoring);
+        startMinimizedOnLogin = background && config.StartMinimized;
 
         SuspendLayout();
         Text = "河科大校园网助手";
@@ -162,7 +192,7 @@ sealed class CampusConnector : Form
         layout.Controls.Add(accountRow, 0, 5);
 
         startup.Text = "登录 Windows 时自动启动";
-        startMinimized.Text = "启动时最小化到托盘";
+        startMinimized.Text = "开机自启时保持最小化";
         autoLogin.Text = "使用已保存账号自动登录";
         autoPortal.Text = "未启用自动登录时打开认证页";
         foreach (var option in new[] { startup, startMinimized, autoLogin, autoPortal })
@@ -179,7 +209,12 @@ sealed class CampusConnector : Form
         autoLogin.Checked = config.AutomaticLogin;
         autoPortal.Checked = config.AutoPortal;
         try { startup.Checked = AppSettings.StartsWithWindows(Application.ExecutablePath); }
-        catch (SecurityException) { startup.Enabled = false; warning = "Windows 限制了开机自启设置。"; }
+        catch (Exception error)
+        {
+            if (!(error is SecurityException || error is UnauthorizedAccessException || error is IOException)) throw;
+            startup.Enabled = false;
+            warning = "无法读取 Windows 开机自启设置。";
+        }
         startup.CheckedChanged += (s, e) => ChangeStartup();
         startMinimized.CheckedChanged += (s, e) => SaveOption(startMinimized, value => config.StartMinimized = value);
         autoLogin.CheckedChanged += (s, e) =>
@@ -223,7 +258,6 @@ sealed class CampusConnector : Form
         menu.Items.Add("退出", null, (s, e) => Close());
         tray.ContextMenuStrip = menu;
         tray.DoubleClick += (s, e) => Restore();
-        Resize += (s, e) => { if (Visible && WindowState == FormWindowState.Minimized) ToTray(); };
         FormClosed += (s, e) =>
         {
             SetNetworkNotifications(false);
@@ -243,8 +277,12 @@ sealed class CampusConnector : Form
 
     async void Start()
     {
-        // Show the setup window on a fresh manual launch, even with the default tray preference.
-        if (startInTray && profiles.SelectedItem != null) ToTray();
+        tray.Visible = true;
+        if (startMinimizedOnLogin && profiles.SelectedItem != null)
+        {
+            WindowState = FormWindowState.Minimized;
+            Show();
+        }
         else Restore();
         if (!config.Monitoring) return;
         SetMonitoring(true);
@@ -357,14 +395,7 @@ sealed class CampusConnector : Form
     {
         WindowState = FormWindowState.Normal;
         Show();
-        tray.Visible = false;
         Activate();
-    }
-
-    void ToTray()
-    {
-        tray.Visible = true;
-        Hide();
     }
 
     void Status(string title, string message, Color color)
@@ -372,7 +403,6 @@ sealed class CampusConnector : Form
         headline.Text = title;
         headline.ForeColor = color;
         detail.Text = message;
-        tray.Text = Text + " · " + title;
     }
 
     bool SaveConfig()
