@@ -24,6 +24,18 @@ static class Checks
             "\"C:\\Program Files\\CampusConnector.exe\" --startup")
             throw new InvalidOperationException("Startup command failed to quote the executable path.");
         Authentication();
+        TrayPreference();
+    }
+
+    static void TrayPreference()
+    {
+        var old = AppSettings.FromConfiguration(new[] { "Haust-STU", Guid.Empty.ToString(), "1", "0", "0" });
+        Assert(old.StartMinimized && old.Monitoring && !old.AutoPortal && !old.AutomaticLogin,
+            "Preserve the saved monitoring and authentication choices during the tray preference upgrade.");
+        old.StartMinimized = false;
+        var restored = AppSettings.FromConfiguration(old.ToConfiguration());
+        Assert(!restored.StartMinimized && restored.Monitoring && restored.ProfileName == "Haust-STU",
+            "Persist the option to show the window when starting monitoring.");
     }
 
     static void Authentication()

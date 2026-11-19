@@ -12,10 +12,11 @@ using System.Windows.Forms;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 [assembly: System.Reflection.AssemblyTitle("河科大校园网助手")]
-[assembly: System.Reflection.AssemblyFileVersion("3.1.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.2.0.0")]
 
 sealed class CampusConnector : Form
 {
+    const int NetworkChangeDelay = 3000, RecoveryInterval = 15000, IdleInterval = 60000;
     static readonly Color Ink = Color.FromArgb(23, 39, 53);
     static readonly Color Muted = Color.FromArgb(77, 93, 108);
     static readonly Color Accent = Color.FromArgb(17, 91, 157);
@@ -25,12 +26,16 @@ sealed class CampusConnector : Form
     readonly ComboBox profiles = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
     readonly Button refresh = new Button(), toggle = new Button(), login = new Button(), browser = new Button(), account = new Button();
     readonly CheckBox startup = new CheckBox(), autoPortal = new CheckBox(), autoLogin = new CheckBox();
+    readonly CheckBox startMinimized = new CheckBox();
     readonly Label headline = new Label(), detail = new Label(), accountState = new Label();
     readonly NotifyIcon tray = new NotifyIcon();
-    readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 15000 };
+    readonly ToolStripMenuItem trayToggle = new ToolStripMenuItem();
+    readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     readonly AppSettings config;
     readonly bool startInTray;
     bool monitoring, busy, portalOpened, updating, editing, savedAccount;
+    bool steadyConnection, checkSoon, networkSubscribed;
+    int networkNotificationQueued;
     int revision, missed, delay = 30;
     DateTime nextRetry, nextAuth, nextBrowserCheck;
     CancellationTokenSource activeCheck;
@@ -55,12 +60,17 @@ sealed class CampusConnector : Form
             using (var form = new CampusConnector(args.Contains("--startup")))
             {
                 var handle = form.Handle;
+                form.BeginInvoke(new Action(form.Start));
                 var wait = ThreadPool.RegisterWaitForSingleObject(activation, (state, timeout) =>
                 {
                     try { form.BeginInvoke(new Action(form.Restore)); }
                     catch (InvalidOperationException) { }
                 }, null, Timeout.Infinite, false);
-                try { Application.Run(form); }
+                try
+                {
+                    using (var context = new ApplicationContext(form))
+                        Application.Run(context);
+                }
                 finally { wait.Unregister(null); }
             }
         }
@@ -69,17 +79,17 @@ sealed class CampusConnector : Form
 
     CampusConnector(bool background)
     {
-        startInTray = background;
         string warning = null;
         try { config = AppSettings.Load(); }
         catch (IOException) { config = new AppSettings(); warning = "无法读取上次设置，请重新选择校园 Wi-Fi。"; }
         catch (UnauthorizedAccessException) { config = new AppSettings(); warning = "无法读取上次设置，请检查 Windows 权限。"; }
         catch (SecurityException) { config = new AppSettings(); warning = "无法读取上次设置，请检查 Windows 权限。"; }
+        startInTray = config.StartMinimized && (background || config.Monitoring);
 
         SuspendLayout();
         Text = "河科大校园网助手";
-        ClientSize = new Size(620, 455);
-        MinimumSize = new Size(636, 494);
+        ClientSize = new Size(620, 484);
+        MinimumSize = new Size(636, 523);
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(245, 248, 251);
@@ -88,10 +98,10 @@ sealed class CampusConnector : Form
 
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 16), ColumnCount = 1, RowCount = 10
+            Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 16), ColumnCount = 1, RowCount = 11
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (int height in new[] { 53, 86, 34, 40, 26, 50, 29, 29, 29 })
+        foreach (int height in new[] { 53, 86, 34, 40, 26, 50, 29, 29, 29, 29 })
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
@@ -152,31 +162,40 @@ sealed class CampusConnector : Form
         layout.Controls.Add(accountRow, 0, 5);
 
         startup.Text = "登录 Windows 时自动启动";
+        startMinimized.Text = "启动时最小化到托盘";
         autoLogin.Text = "使用已保存账号自动登录";
         autoPortal.Text = "未启用自动登录时打开认证页";
-        foreach (var option in new[] { startup, autoLogin, autoPortal })
+        foreach (var option in new[] { startup, startMinimized, autoLogin, autoPortal })
         {
             option.AutoSize = true;
             option.Margin = Padding.Empty;
             option.Anchor = AnchorStyles.Left;
         }
         layout.Controls.Add(startup, 0, 6);
-        layout.Controls.Add(autoLogin, 0, 7);
-        layout.Controls.Add(autoPortal, 0, 8);
+        layout.Controls.Add(startMinimized, 0, 7);
+        layout.Controls.Add(autoLogin, 0, 8);
+        layout.Controls.Add(autoPortal, 0, 9);
+        startMinimized.Checked = config.StartMinimized;
         autoLogin.Checked = config.AutomaticLogin;
         autoPortal.Checked = config.AutoPortal;
         try { startup.Checked = AppSettings.StartsWithWindows(Application.ExecutablePath); }
         catch (SecurityException) { startup.Enabled = false; warning = "Windows 限制了开机自启设置。"; }
         startup.CheckedChanged += (s, e) => ChangeStartup();
+        startMinimized.CheckedChanged += (s, e) => SaveOption(startMinimized, value => config.StartMinimized = value);
         autoLogin.CheckedChanged += (s, e) =>
         {
             if (updating) return;
-            SaveOption(autoLogin);
+            SaveOption(autoLogin, value => config.AutomaticLogin = value);
             CancelCheck();
             ResetAuthentication();
+            RequestCheck();
             UpdateActions();
         };
-        autoPortal.CheckedChanged += (s, e) => { if (!updating) SaveOption(autoPortal); };
+        autoPortal.CheckedChanged += (s, e) =>
+        {
+            SaveOption(autoPortal, value => config.AutoPortal = value);
+            RequestCheck();
+        };
 
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(0, 10, 0, 0), WrapContents = false };
         SetButton(toggle, "开始监控", true, async (s, e) => await Toggle());
@@ -185,35 +204,51 @@ sealed class CampusConnector : Form
         var exit = new Button();
         SetButton(exit, "退出", false, (s, e) => Close());
         actions.Controls.AddRange(new Control[] { toggle, login, browser, exit });
-        layout.Controls.Add(actions, 0, 9);
+        layout.Controls.Add(actions, 0, 10);
         profiles.SelectedIndexChanged += (s, e) => UpdateActions();
-        timer.Tick += async (s, e) => await Check(CheckMode.Monitor);
+        timer.Tick += async (s, e) =>
+        {
+            timer.Stop();
+            await Check(CheckMode.Monitor);
+        };
 
         tray.Icon = SystemIcons.Application;
         tray.Text = Text;
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开校园网助手", null, (s, e) => Restore());
+        trayToggle.Click += async (s, e) => await Toggle();
+        menu.Items.Add(trayToggle);
         menu.Items.Add("立即登录", null, async (s, e) => await Check(CheckMode.Login));
         menu.Items.Add("浏览器登录", null, async (s, e) => await Check(CheckMode.Browser));
         menu.Items.Add("退出", null, (s, e) => Close());
         tray.ContextMenuStrip = menu;
         tray.DoubleClick += (s, e) => Restore();
-        Resize += (s, e) => { if (WindowState == FormWindowState.Minimized) ToTray(); };
-        FormClosed += (s, e) => { CancelCheck(); timer.Dispose(); tray.Dispose(); menu.Dispose(); };
+        Resize += (s, e) => { if (Visible && WindowState == FormWindowState.Minimized) ToTray(); };
+        FormClosed += (s, e) =>
+        {
+            SetNetworkNotifications(false);
+            CancelCheck();
+            timer.Dispose();
+            tray.Dispose();
+            menu.Dispose();
+        };
 
         ReadAccountStatus();
         UpdateProfiles();
         if (warning != null) Status("请检查设置", warning, Amber);
-        Shown += async (s, e) =>
-        {
-            if (startInTray) ToTray();
-            if (!config.Monitoring || profiles.SelectedItem == null) return;
-            SetMonitoring(true);
-            await Check(CheckMode.Monitor);
-        };
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96, 96);
         ResumeLayout(true);
+    }
+
+    async void Start()
+    {
+        // Show the setup window on a fresh manual launch, even with the default tray preference.
+        if (startInTray && profiles.SelectedItem != null) ToTray();
+        else Restore();
+        if (!config.Monitoring) return;
+        SetMonitoring(true);
+        await Check(CheckMode.Monitor);
     }
 
     static void SetButton(Button button, string caption, bool primary, EventHandler action)
@@ -264,7 +299,9 @@ sealed class CampusConnector : Form
         var selected = profiles.SelectedItem as WifiProfile;
         bool isHaust = selected != null && selected.Name == "Haust-STU";
         profiles.Enabled = refresh.Enabled = !monitoring && !busy;
-        toggle.Enabled = selected != null;
+        toggle.Enabled = trayToggle.Enabled = monitoring || selected != null;
+        toggle.Text = monitoring ? "暂停监控" : "开始监控";
+        trayToggle.Text = toggle.Text;
         login.Enabled = !busy && selected != null;
         browser.Enabled = login.Enabled;
         autoLogin.Enabled = isHaust && savedAccount;
@@ -294,22 +331,23 @@ sealed class CampusConnector : Form
         DialogResult result;
         using (var dialog = new AccountDialog()) result = dialog.ShowDialog(this);
         editing = false;
-        if (result != DialogResult.OK) return;
-        ReadAccountStatus();
-        ResetAuthentication();
-        Status(savedAccount ? "校园网账号已保存" : "已清除校园网账号",
-            savedAccount ? "点「立即登录」检测，或开启监控后自动登录。" : "仍可以使用「浏览器登录」。", Accent);
+        if (result == DialogResult.OK)
+        {
+            ReadAccountStatus();
+            ResetAuthentication();
+            Status(savedAccount ? "校园网账号已保存" : "已清除校园网账号",
+                savedAccount ? "点「立即登录」检测，或开启监控后自动登录。" : "仍可以使用「浏览器登录」。", Accent);
+        }
         if (monitoring) await Check(CheckMode.Monitor);
     }
 
-    void SaveOption(CheckBox option)
+    void SaveOption(CheckBox option, Action<bool> set)
     {
+        if (updating) return;
         bool enabled = option.Checked;
-        if (option == autoLogin) config.AutomaticLogin = enabled;
-        else config.AutoPortal = enabled;
+        set(enabled);
         if (SaveConfig()) return;
-        if (option == autoLogin) config.AutomaticLogin = !enabled;
-        else config.AutoPortal = !enabled;
+        set(!enabled);
         updating = true;
         option.Checked = !enabled;
         updating = false;
@@ -317,8 +355,8 @@ sealed class CampusConnector : Form
 
     void Restore()
     {
-        Show();
         WindowState = FormWindowState.Normal;
+        Show();
         tray.Visible = false;
         Activate();
     }
@@ -367,9 +405,9 @@ sealed class CampusConnector : Form
         if (monitoring)
         {
             config.Monitoring = false;
+            if (!SaveConfig()) { config.Monitoring = true; return; }
             SetMonitoring(false);
             Status("监控已暂停", "需要时可重新开始，也可以手动打开认证页。", Accent);
-            SaveConfig();
             return;
         }
         var selected = profiles.SelectedItem as WifiProfile;
@@ -385,14 +423,74 @@ sealed class CampusConnector : Form
     void SetMonitoring(bool enabled)
     {
         CancelCheck();
-        monitoring = timer.Enabled = enabled;
+        timer.Stop();
+        monitoring = enabled;
+        steadyConnection = checkSoon = false;
+        SetNetworkNotifications(enabled);
         missed = 0;
         delay = 30;
         if (enabled) ResetAuthentication();
         nextRetry = DateTime.MinValue;
-        toggle.Text = enabled ? "暂停监控" : "开始监控";
         if (enabled) Status("正在检测校园网", "正在确认 Wi-Fi 连接和网页认证状态。", Accent);
         UpdateActions();
+    }
+
+    void SetNetworkNotifications(bool enabled)
+    {
+        if (enabled && !networkSubscribed)
+        {
+            try
+            {
+                NetworkChange.NetworkAddressChanged += NetworkChanged;
+                networkSubscribed = true;
+            }
+            catch (NetworkInformationException)
+            {
+                // Periodic checks also cover systems that cannot register for notifications.
+            }
+        }
+        else if (!enabled && networkSubscribed)
+        {
+            NetworkChange.NetworkAddressChanged -= NetworkChanged;
+            networkSubscribed = false;
+        }
+    }
+
+    void NetworkChanged(object sender, EventArgs e)
+    {
+        if (Interlocked.Exchange(ref networkNotificationQueued, 1) != 0) return;
+        try
+        {
+            BeginInvoke(new Action(() =>
+            {
+                Interlocked.Exchange(ref networkNotificationQueued, 0);
+                RequestCheck();
+            }));
+        }
+        catch (InvalidOperationException) { Interlocked.Exchange(ref networkNotificationQueued, 0); }
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        const int PowerBroadcast = 0x218, AutomaticResume = 0x12;
+        if (message.Msg == PowerBroadcast && message.WParam.ToInt64() == AutomaticResume)
+            RequestCheck();
+        base.WndProc(ref message);
+    }
+
+    void RequestCheck()
+    {
+        if (!monitoring || checkSoon) return;
+        checkSoon = true;
+        ScheduleCheck();
+    }
+
+    void ScheduleCheck()
+    {
+        if (!monitoring || busy || editing || IsDisposed) return;
+        timer.Stop();
+        timer.Interval = checkSoon ? NetworkChangeDelay : steadyConnection ? IdleInterval : RecoveryInterval;
+        timer.Start();
     }
 
     void CancelCheck()
@@ -429,8 +527,17 @@ sealed class CampusConnector : Form
 
     async Task Check(CheckMode mode)
     {
+        if (busy || editing || (mode == CheckMode.Monitor && !monitoring)) return;
+        timer.Stop();
+        checkSoon = false;
+        steadyConnection = false;
+        if (mode == CheckMode.Monitor && profiles.SelectedItem == null) UpdateProfiles();
         var selected = profiles.SelectedItem as WifiProfile;
-        if (selected == null || busy || editing || (mode == CheckMode.Monitor && !monitoring)) return;
+        if (selected == null)
+        {
+            ScheduleCheck();
+            return;
+        }
         int request = revision;
         var stop = new CancellationTokenSource();
         activeCheck = stop;
@@ -470,6 +577,7 @@ sealed class CampusConnector : Form
             if (!IsCurrent(request, selected)) return;
             if (result.State == ProbeState.Online)
             {
+                steadyConnection = true;
                 ResetAuthentication();
                 Status("校园网已联网", selected.Name + " · 最近检测 " + DateTime.Now.ToString("HH:mm:ss"), Green);
                 return;
@@ -505,6 +613,7 @@ sealed class CampusConnector : Form
                         if (!IsCurrent(request, selected)) return;
                         if (verified.State == ProbeState.Online)
                         {
+                            steadyConnection = true;
                             ResetAuthentication();
                             Status("校园网已联网", selected.Name + " · 学校认证通过", Green);
                             return;
@@ -545,6 +654,11 @@ sealed class CampusConnector : Form
             if (IsCurrent(request, selected))
                 Status("无法读取已保存的账号", "请检查当前 Windows 用户权限，或改用浏览器登录。", Amber);
         }
+        catch (SecurityException)
+        {
+            if (IsCurrent(request, selected))
+                Status("无法读取已保存的账号", "请检查当前 Windows 用户权限，或改用浏览器登录。", Amber);
+        }
         catch (IOException)
         {
             if (IsCurrent(request, selected))
@@ -568,7 +682,11 @@ sealed class CampusConnector : Form
             activeCheck = null;
             stop.Dispose();
             busy = false;
-            if (!IsDisposed) UpdateActions();
+            if (!IsDisposed)
+            {
+                UpdateActions();
+                ScheduleCheck();
+            }
         }
     }
 
@@ -613,6 +731,7 @@ sealed class CampusConnector : Form
         if (!IsCurrent(request, selected)) return;
         if (alternate.State == ProbeState.Online)
         {
+            steadyConnection = true;
             missed = 0;
             Status("当前通过其他网络上网", "未连接「" + selected.Name + "」。程序会继续监控。", Accent);
             return;

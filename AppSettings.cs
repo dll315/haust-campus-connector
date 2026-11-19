@@ -12,23 +12,17 @@ sealed class AppSettings
     public bool Monitoring;
     public bool AutoPortal = true;
     public bool AutomaticLogin = true;
+    public bool StartMinimized = true;
 
     public static AppSettings Load()
     {
-        var config = new AppSettings();
         using (var key = Registry.CurrentUser.OpenSubKey(SettingsKey))
         {
             var data = key == null ? null : key.GetValue("Configuration") as string[];
-            if (data != null && (data.Length == 4 || data.Length == 5))
-            {
-                config.ProfileName = data[0];
-                Guid.TryParse(data[1], out config.Adapter);
-                config.Monitoring = data[2] == "1";
-                config.AutoPortal = data[3] == "1";
-                config.AutomaticLogin = data.Length == 4 || data[4] == "1";
-                return config;
-            }
+            var saved = FromConfiguration(data);
+            if (saved != null) return saved;
         }
+        var config = new AppSettings();
         var oldPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "CampusConnector", "settings.txt");
         if (File.Exists(oldPath))
@@ -36,11 +30,30 @@ sealed class AppSettings
         return config;
     }
 
+    internal static AppSettings FromConfiguration(string[] data)
+    {
+        if (data == null || data.Length < 4 || data.Length > 6) return null;
+        Guid adapter;
+        Guid.TryParse(data[1], out adapter);
+        return new AppSettings
+        {
+            ProfileName = data[0], Adapter = adapter,
+            Monitoring = data[2] == "1", AutoPortal = data[3] == "1",
+            AutomaticLogin = data.Length < 5 || data[4] == "1",
+            StartMinimized = data.Length < 6 || data[5] == "1"
+        };
+    }
+
+    internal string[] ToConfiguration()
+    {
+        return new[] { ProfileName ?? "", Adapter.ToString(), Monitoring ? "1" : "0",
+            AutoPortal ? "1" : "0", AutomaticLogin ? "1" : "0", StartMinimized ? "1" : "0" };
+    }
+
     public void Save()
     {
         using (var key = Registry.CurrentUser.CreateSubKey(SettingsKey))
-            key.SetValue("Configuration", new[] { ProfileName ?? "", Adapter.ToString(),
-                Monitoring ? "1" : "0", AutoPortal ? "1" : "0", AutomaticLogin ? "1" : "0" }, RegistryValueKind.MultiString);
+            key.SetValue("Configuration", ToConfiguration(), RegistryValueKind.MultiString);
     }
 
     public static string StartupCommand(string exe) { return "\"" + exe + "\" --startup"; }
