@@ -84,6 +84,42 @@ static class Checks
                 new PortalReply(200, "{\"code\":0}");
         }, CancellationToken.None);
         Assert(online == AuthState.AlreadyOnline, "Skip login when already online.");
+        var ipOnly = new Uri(origin, "/tpl/stu-xy/login.html?ip=10.122.1.2&nasId=4");
+        Assert(HaustPortal.Authenticate(ipOnly, adapter, account, (uri, referer, body, token) =>
+        {
+            if (uri.AbsolutePath == "/api/csrf-token") return new PortalReply(200, "{\"csrf_token\":\"fake\"}");
+            var fields = body ?? uri.Query;
+            Assert(!fields.Contains("userMac=") && !fields.Contains("switchip="), "Leave missing device fields for the gateway to resolve.");
+            return body == null ? new PortalReply(200, "{\"code\":1}") : new PortalReply(200, "{\"code\":0}");
+        }, CancellationToken.None, "02:11:22:33:44:55") == AuthState.Accepted, "Login from a portal URL with only IP and NAS ID.");
+        Assert(HaustPortal.Authenticate(page, adapter, account, (uri, referer, body, token) =>
+            uri.AbsolutePath == "/api/account/status" ? new PortalReply(200, "{\"code\":4,\"online\":null}") : mock(uri, referer, body, token),
+            CancellationToken.None) == AuthState.Accepted, "A numeric status with no online session should allow login.");
+        Assert(HaustPortal.Authenticate(page, adapter, account, (uri, referer, body, token) =>
+        {
+            Assert(body == null, "Do not submit credentials on a malformed status response.");
+            return uri.AbsolutePath == "/api/account/status" ? new PortalReply(200, "{\"online\":null}") : mock(uri, referer, body, token);
+        }, CancellationToken.None) == AuthState.Unavailable, "Require a recognized status response before login.");
+
+        var attempts = new List<Uri>();
+        var changedGateway = new Uri("http://10.100.51.9/splash");
+        Assert(HaustPortal.LoginViaDiscovery(changedGateway, entry =>
+        {
+            attempts.Add(entry);
+            return entry == HaustPortal.DefaultEntry ? AuthState.Accepted : AuthState.Unavailable;
+        }) == AuthState.Accepted, "Use the default entry after discovery fails.");
+        Assert(attempts.Count == 2 && attempts[0] == new Uri("https://10.100.51.9/api/r/default") &&
+            attempts[1] == HaustPortal.DefaultEntry, "Try discovery on the new gateway before falling back.");
+        Assert(HaustPortal.LoginViaDiscovery(changedGateway, entry =>
+        {
+            Assert(entry != HaustPortal.DefaultEntry, "Do not try a second gateway after sending credentials.");
+            return AuthState.Rejected;
+        }) == AuthState.Rejected, "Preserve the first portal's rejection.");
+        Assert(HaustPortal.LoginViaDiscovery(new Uri("https://haust.edu.cn.example.com/"), entry =>
+        {
+            Assert(entry == HaustPortal.DefaultEntry, "Do not use an untrusted interception target.");
+            return AuthState.Accepted;
+        }) == AuthState.Accepted, "Use the school entry if the detected URL is unsupported.");
     }
 
     static void Assert(bool value, string behavior)

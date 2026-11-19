@@ -12,7 +12,7 @@ using System.Windows.Forms;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 [assembly: System.Reflection.AssemblyTitle("河科大校园网助手")]
-[assembly: System.Reflection.AssemblyFileVersion("3.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.1.0.0")]
 
 sealed class CampusConnector : Form
 {

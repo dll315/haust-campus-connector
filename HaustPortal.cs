@@ -154,10 +154,23 @@ static class HaustPortal
 
     public static AuthState Login(Uri observed, IPAddress[] local, string adapterMac, CampusAccount account, CancellationToken cancellation)
     {
-        var entry = observed == null || observed == PortalProbe.Address ? DefaultEntry : Candidate(observed);
-        if (entry == null || !local.Any(ip => ip.AddressFamily == AddressFamily.InterNetwork)) return AuthState.Unavailable;
-        using (var session = new PortalSession(local, cancellation))
-            return Authenticate(entry, local, account, session.Request, cancellation, adapterMac);
+        if (!local.Any(ip => ip.AddressFamily == AddressFamily.InterNetwork)) return AuthState.Unavailable;
+        return LoginViaDiscovery(observed, entry =>
+        {
+            using (var session = new PortalSession(local, cancellation))
+                return Authenticate(entry, local, account, session.Request, cancellation, adapterMac);
+        });
+    }
+
+    internal static AuthState LoginViaDiscovery(Uri observed, Func<Uri, AuthState> authenticate)
+    {
+        var entry = Candidate(observed) ?? DefaultEntry;
+        if (entry.AbsolutePath != "/" && !LoginPath.IsMatch(entry.AbsolutePath) &&
+            !entry.AbsolutePath.StartsWith("/api/r/", StringComparison.Ordinal))
+            entry = new Uri(entry, DefaultEntry.AbsolutePath);
+        var state = authenticate(entry);
+        // Unavailable is returned only before the first request containing credentials.
+        return state == AuthState.Unavailable && entry != DefaultEntry ? authenticate(DefaultEntry) : state;
     }
 
     public static bool VerifyBrowserPortal(Uri observed, IPAddress[] local, CancellationToken cancellation)
@@ -206,24 +219,27 @@ static class HaustPortal
         var query = HttpUtility.ParseQueryString(page.Query);
         IPAddress ip;
         int nas;
-        string mac = string.IsNullOrWhiteSpace(query["mac"]) ? adapterMac : query["mac"];
+        string mac = query["mac"];
         if (!IPAddress.TryParse(query["wlanuserip"] ?? query["ip"], out ip) ||
             ip.AddressFamily != AddressFamily.InterNetwork || !local.Contains(ip) ||
-            !int.TryParse(query["nasId"], NumberStyles.None, CultureInfo.InvariantCulture, out nas) || nas <= 0 ||
-            mac == null || !MacFormat.IsMatch(mac) ||
-            (adapterMac != null && !string.Equals(mac, adapterMac, StringComparison.OrdinalIgnoreCase)))
+            !int.TryParse(query["nasId"], NumberStyles.None, CultureInfo.InvariantCulture, out nas) || nas <= 0)
+            return AuthState.Unavailable;
+        if (!string.IsNullOrEmpty(mac) && (!MacFormat.IsMatch(mac) ||
+            (adapterMac != null && !string.Equals(mac, adapterMac, StringComparison.OrdinalIgnoreCase))))
             return AuthState.Unavailable;
 
+        var device = "nasId=" + nas.ToString(CultureInfo.InvariantCulture) + "&userIpv4=" + Encode(ip.ToString());
         IPAddress switchAddress;
-        var switchIp = IPAddress.TryParse(query["switchip"], out switchAddress) ? switchAddress.ToString() : "";
-        var device = "switchip=" + Encode(switchIp) + "&nasId=" + nas.ToString(CultureInfo.InvariantCulture) +
-            "&userIpv4=" + Encode(ip.ToString()) + "&userMac=" + Encode(mac) + "&captcha=&captchaId=";
+        if (IPAddress.TryParse(query["switchip"], out switchAddress)) device += "&switchip=" + Encode(switchAddress.ToString());
+        if (!string.IsNullOrEmpty(mac)) device += "&userMac=" + Encode(mac);
         var token = ReadToken(send(new Uri(page, "/api/csrf-token"), page, null, null));
         if (token == null) return AuthState.Unavailable;
         var status = Json(send(new Uri(page, "/api/account/status?username=&password=&" + device + "&isp=&timeLimit="), page, null, token));
         int state = Number(status, "code");
         if (state == 0) return AuthState.AlreadyOnline;
-        if (state != 1) return AuthState.Unavailable;
+        object online;
+        if (state != 1 && (state < 0 || !status.TryGetValue("online", out online) || online != null))
+            return AuthState.Unavailable;
 
         cancellation.ThrowIfCancellationRequested();
         var form = "username=" + Encode(account.User) + "&password=" + Encode(account.Password) + "&" + device +
