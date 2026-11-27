@@ -12,7 +12,7 @@ using System.Windows.Forms;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 [assembly: System.Reflection.AssemblyTitle("河科大校园网助手")]
-[assembly: System.Reflection.AssemblyFileVersion("3.4.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.5.0.0")]
 
 sealed class CampusConnector : Form
 {
@@ -27,13 +27,14 @@ sealed class CampusConnector : Form
     readonly Button refresh = new Button(), toggle = new Button(), login = new Button(), browser = new Button(), account = new Button();
     readonly CheckBox startup = new CheckBox(), autoPortal = new CheckBox(), autoLogin = new CheckBox();
     readonly CheckBox startMinimized = new CheckBox();
+    readonly CheckBox hideOnClose = new CheckBox();
     readonly Label headline = new Label(), detail = new Label(), accountState = new Label();
     readonly NotifyIcon tray = new NotifyIcon();
     readonly ToolStripMenuItem trayToggle = new ToolStripMenuItem();
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     readonly AppSettings config;
     readonly bool startMinimizedOnLogin;
-    bool exitRequested, backgroundNoticeShown;
+    bool exitRequested;
     bool monitoring, busy, portalOpened, updating, editing, savedAccount;
     bool steadyConnection, checkSoon, networkSubscribed;
     int networkNotificationQueued;
@@ -213,7 +214,8 @@ sealed class CampusConnector : Form
         startMinimized.Text = "开机自启时保持最小化";
         autoLogin.Text = "使用已保存账号自动登录";
         autoPortal.Text = "未启用自动登录时打开认证页";
-        foreach (var option in new[] { startup, startMinimized, autoLogin, autoPortal })
+        hideOnClose.Text = "关闭窗口时隐藏到托盘";
+        foreach (var option in new[] { startup, startMinimized, autoLogin, autoPortal, hideOnClose })
         {
             option.AutoSize = true;
             option.Margin = Padding.Empty;
@@ -223,11 +225,8 @@ sealed class CampusConnector : Form
         layout.Controls.Add(startMinimized, 0, 7);
         layout.Controls.Add(autoLogin, 0, 8);
         layout.Controls.Add(autoPortal, 0, 9);
-        layout.Controls.Add(new Label
-        {
-            Text = "关闭窗口后可从右下角「^」打开。要停止运行，请选择「退出程序」。",
-            TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Dock = DockStyle.Fill, Margin = Padding.Empty
-        }, 0, 10);
+        layout.Controls.Add(hideOnClose, 0, 10);
+        hideOnClose.Checked = config.HideOnClose;
         startMinimized.Checked = config.StartMinimized;
         autoLogin.Checked = config.AutomaticLogin;
         autoPortal.Checked = config.AutoPortal;
@@ -240,6 +239,7 @@ sealed class CampusConnector : Form
         }
         startup.CheckedChanged += (s, e) => ChangeStartup();
         startMinimized.CheckedChanged += (s, e) => SaveOption(startMinimized, value => config.StartMinimized = value);
+        hideOnClose.CheckedChanged += (s, e) => SaveOption(hideOnClose, value => config.HideOnClose = value);
         autoLogin.CheckedChanged += (s, e) =>
         {
             if (updating) return;
@@ -282,7 +282,6 @@ sealed class CampusConnector : Form
         menu.Items.Add("退出程序", null, (s, e) => ExitProgram());
         tray.ContextMenuStrip = menu;
         tray.DoubleClick += (s, e) => Restore();
-        tray.BalloonTipClicked += (s, e) => Restore();
         FormClosed += (s, e) =>
         {
             SetNetworkNotifications(false);
@@ -426,21 +425,10 @@ sealed class CampusConnector : Form
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
-        if (e.Cancel || exitRequested || e.CloseReason != CloseReason.UserClosing) return;
+        if (e.Cancel || exitRequested || !config.HideOnClose || e.CloseReason != CloseReason.UserClosing) return;
         e.Cancel = true;
         tray.Visible = true;
-        if (!Visible) return;
-
-        string state = monitoring ? "校园网监控会继续运行。" : "监控当前已暂停，可从托盘菜单开启。";
-        if (!backgroundNoticeShown)
-        {
-            backgroundNoticeShown = true;
-            MessageBox.Show(this, state + "\r\n\r\n在任务栏右下角双击校园网助手图标可恢复窗口。找不到图标时，点击「^」或再次双击程序。要结束运行，请选择「退出程序」。",
-                "窗口将隐藏到通知区域", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            if (IsDisposed || exitRequested) return;
-        }
         Hide();
-        tray.ShowBalloonTip(3000, Text + "已转入后台", state + " 双击托盘图标可恢复窗口。", ToolTipIcon.Info);
     }
 
     void ExitProgram()

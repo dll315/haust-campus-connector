@@ -13,6 +13,7 @@ sealed class AppSettings
     public bool AutoPortal = true;
     public bool AutomaticLogin = true;
     public bool StartMinimized = true;
+    public bool HideOnClose = true;
 
     public static AppSettings Load()
     {
@@ -32,7 +33,7 @@ sealed class AppSettings
 
     internal static AppSettings FromConfiguration(string[] data)
     {
-        if (data == null || data.Length < 4 || data.Length > 6) return null;
+        if (data == null || data.Length < 4 || data.Length > 7) return null;
         Guid adapter;
         Guid.TryParse(data[1], out adapter);
         return new AppSettings
@@ -40,14 +41,15 @@ sealed class AppSettings
             ProfileName = data[0], Adapter = adapter,
             Monitoring = data[2] == "1", AutoPortal = data[3] == "1",
             AutomaticLogin = data.Length < 5 || data[4] == "1",
-            StartMinimized = data.Length < 6 || data[5] == "1"
+            StartMinimized = data.Length < 6 || data[5] == "1",
+            HideOnClose = data.Length < 7 || data[6] == "1"
         };
     }
 
     internal string[] ToConfiguration()
     {
         return new[] { ProfileName ?? "", Adapter.ToString(), Monitoring ? "1" : "0",
-            AutoPortal ? "1" : "0", AutomaticLogin ? "1" : "0", StartMinimized ? "1" : "0" };
+            AutoPortal ? "1" : "0", AutomaticLogin ? "1" : "0", StartMinimized ? "1" : "0", HideOnClose ? "1" : "0" };
     }
 
     public void Save()

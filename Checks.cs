@@ -32,9 +32,13 @@ static class Checks
         var old = AppSettings.FromConfiguration(new[] { "Haust-STU", Guid.Empty.ToString(), "1", "0", "0" });
         Assert(old.StartMinimized && old.Monitoring && !old.AutoPortal && !old.AutomaticLogin,
             "Preserve the saved monitoring and authentication choices during the tray preference upgrade.");
+        var previous = AppSettings.FromConfiguration(new[] { "Haust-STU", Guid.Empty.ToString(), "1", "1", "1", "0" });
+        Assert(previous.HideOnClose && !previous.StartMinimized && previous.Monitoring,
+            "Keep closing to the tray for users upgrading from the previous version.");
+        old.HideOnClose = false;
         old.StartMinimized = false;
         var restored = AppSettings.FromConfiguration(old.ToConfiguration());
-        Assert(!restored.StartMinimized && restored.Monitoring && restored.ProfileName == "Haust-STU",
+        Assert(!restored.StartMinimized && !restored.HideOnClose && restored.Monitoring && restored.ProfileName == "Haust-STU",
             "Persist the option to show the window when starting monitoring.");
     }
 
