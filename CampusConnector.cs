@@ -12,7 +12,7 @@ using System.Windows.Forms;
 
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")]
 [assembly: System.Reflection.AssemblyTitle("河科大校园网助手")]
-[assembly: System.Reflection.AssemblyFileVersion("3.3.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("3.4.0.0")]
 
 sealed class CampusConnector : Form
 {
@@ -33,6 +33,7 @@ sealed class CampusConnector : Form
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
     readonly AppSettings config;
     readonly bool startMinimizedOnLogin;
+    bool exitRequested, backgroundNoticeShown;
     bool monitoring, busy, portalOpened, updating, editing, savedAccount;
     bool steadyConnection, checkSoon, networkSubscribed;
     int networkNotificationQueued;
@@ -118,8 +119,8 @@ sealed class CampusConnector : Form
 
         SuspendLayout();
         Text = "河科大校园网助手";
-        ClientSize = new Size(620, 484);
-        MinimumSize = new Size(636, 523);
+        ClientSize = new Size(620, 520);
+        MinimumSize = new Size(636, 559);
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(245, 248, 251);
@@ -128,18 +129,35 @@ sealed class CampusConnector : Form
 
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 16), ColumnCount = 1, RowCount = 11
+            Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 16), ColumnCount = 1, RowCount = 12
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        foreach (int height in new[] { 53, 86, 34, 40, 26, 50, 29, 29, 29, 29 })
+        foreach (int height in new[] { 58, 86, 34, 40, 26, 50, 29, 29, 29, 29, 31 })
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
-        layout.Controls.Add(new Label
+        var appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        if (appIcon != null) Icon = appIcon;
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 49));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var headerImage = Icon.ToBitmap();
+        header.Controls.Add(new PictureBox
+        {
+            Image = headerImage, Size = new Size(38, 38), SizeMode = PictureBoxSizeMode.Zoom,
+            Anchor = AnchorStyles.Left, Margin = new Padding(0, 0, 0, 6)
+        }, 0, 0);
+        header.Controls.Add(new Label
         {
             Text = Text, Dock = DockStyle.Fill, Font = new Font(Font.FontFamily, 20, FontStyle.Bold),
-            Margin = Padding.Empty
-        }, 0, 0);
+            TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, 0, 0, 6)
+        }, 1, 0);
+        layout.Controls.Add(header, 0, 0);
+        Disposed += (s, e) =>
+        {
+            headerImage.Dispose();
+            if (appIcon != null) appIcon.Dispose();
+        };
 
         var card = new TableLayoutPanel
         {
@@ -205,6 +223,11 @@ sealed class CampusConnector : Form
         layout.Controls.Add(startMinimized, 0, 7);
         layout.Controls.Add(autoLogin, 0, 8);
         layout.Controls.Add(autoPortal, 0, 9);
+        layout.Controls.Add(new Label
+        {
+            Text = "关闭窗口后可从右下角「^」打开。要停止运行，请选择「退出程序」。",
+            TextAlign = ContentAlignment.MiddleLeft, ForeColor = Muted, Dock = DockStyle.Fill, Margin = Padding.Empty
+        }, 0, 10);
         startMinimized.Checked = config.StartMinimized;
         autoLogin.Checked = config.AutomaticLogin;
         autoPortal.Checked = config.AutoPortal;
@@ -237,9 +260,9 @@ sealed class CampusConnector : Form
         SetButton(login, "立即登录", false, async (s, e) => await Check(CheckMode.Login));
         SetButton(browser, "浏览器登录", false, async (s, e) => await Check(CheckMode.Browser));
         var exit = new Button();
-        SetButton(exit, "退出", false, (s, e) => Close());
+        SetButton(exit, "退出程序", false, (s, e) => ExitProgram());
         actions.Controls.AddRange(new Control[] { toggle, login, browser, exit });
-        layout.Controls.Add(actions, 0, 10);
+        layout.Controls.Add(actions, 0, 11);
         profiles.SelectedIndexChanged += (s, e) => UpdateActions();
         timer.Tick += async (s, e) =>
         {
@@ -247,7 +270,7 @@ sealed class CampusConnector : Form
             await Check(CheckMode.Monitor);
         };
 
-        tray.Icon = SystemIcons.Application;
+        tray.Icon = Icon;
         tray.Text = Text;
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开校园网助手", null, (s, e) => Restore());
@@ -255,9 +278,11 @@ sealed class CampusConnector : Form
         menu.Items.Add(trayToggle);
         menu.Items.Add("立即登录", null, async (s, e) => await Check(CheckMode.Login));
         menu.Items.Add("浏览器登录", null, async (s, e) => await Check(CheckMode.Browser));
-        menu.Items.Add("退出", null, (s, e) => Close());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("退出程序", null, (s, e) => ExitProgram());
         tray.ContextMenuStrip = menu;
         tray.DoubleClick += (s, e) => Restore();
+        tray.BalloonTipClicked += (s, e) => Restore();
         FormClosed += (s, e) =>
         {
             SetNetworkNotifications(false);
@@ -396,6 +421,32 @@ sealed class CampusConnector : Form
         WindowState = FormWindowState.Normal;
         Show();
         Activate();
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        if (e.Cancel || exitRequested || e.CloseReason != CloseReason.UserClosing) return;
+        e.Cancel = true;
+        tray.Visible = true;
+        if (!Visible) return;
+
+        string state = monitoring ? "校园网监控会继续运行。" : "监控当前已暂停，可从托盘菜单开启。";
+        if (!backgroundNoticeShown)
+        {
+            backgroundNoticeShown = true;
+            MessageBox.Show(this, state + "\r\n\r\n在任务栏右下角双击校园网助手图标可恢复窗口。找不到图标时，点击「^」或再次双击程序。要结束运行，请选择「退出程序」。",
+                "窗口将隐藏到通知区域", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (IsDisposed || exitRequested) return;
+        }
+        Hide();
+        tray.ShowBalloonTip(3000, Text + "已转入后台", state + " 双击托盘图标可恢复窗口。", ToolTipIcon.Info);
+    }
+
+    void ExitProgram()
+    {
+        exitRequested = true;
+        Close();
     }
 
     void Status(string title, string message, Color color)
